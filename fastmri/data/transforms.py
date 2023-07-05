@@ -415,6 +415,34 @@ class VarNetSample(NamedTuple):
     crop_size: Tuple[int, int]
 
 
+class VarNetSampleM2(NamedTuple):
+    """
+    A sample of masked k-space for variational network reconstruction.
+
+    Args:
+        masked_kspace: k-space after applying sampling mask.
+        mask: The applied sampling mask.
+        num_low_frequencies: The number of samples for the densely-sampled
+            center.
+        target: The target image (if applicable).
+        fname: File name.
+        slice_num: The slice index.
+        max_value: Maximum image value.
+        crop_size: The size to crop the final image.
+    """
+
+    gt: torch.Tensor
+    zf: torch.Tensor
+    masked_kspace: torch.Tensor
+    mask: torch.Tensor
+    num_low_frequencies: Optional[int]
+    target: torch.Tensor
+    fname: str
+    slice_num: int
+    max_value: float
+    crop_size: Tuple[int, int]
+
+
 class VarNetDataTransform:
     """
     Data Transformer for training VarNet models.
@@ -517,7 +545,10 @@ class VarNetDataTransformM2:
     Data Transformer for training VarNet models.
     """
 
-    def __init__(self, mask_func: Optional[MaskFunc] = None, use_seed: bool = True):
+    def __init__(self,
+                 mask_func: Optional[MaskFunc] = None,
+                 use_seed: bool = True,
+                 mask: Optional[np.ndarray] = None,):
         """
         Args:
             mask_func: Optional; A function that can create a mask of
@@ -528,6 +559,8 @@ class VarNetDataTransformM2:
         """
         self.mask_func = mask_func
         self.use_seed = use_seed
+        self.mask = mask
+
 
     def __call__(
         self,
@@ -537,7 +570,7 @@ class VarNetDataTransformM2:
         attrs: Dict,
         fname: str,
         slice_num: int,
-    ) -> VarNetSample:
+    ) -> VarNetSampleM2:
         """
         Args:
             kspace: Input k-space of shape (num_coils, rows, cols) for
@@ -554,6 +587,9 @@ class VarNetDataTransformM2:
             (from target), the target crop size, and the number of low
             frequency lines sampled.
         """
+
+        assert mask is None, "mask should be None, we use self.mask."
+
         if target is not None:
             target_torch = to_tensor(target)
             max_value = attrs["max"]
@@ -562,29 +598,13 @@ class VarNetDataTransformM2:
             max_value = 0.0
 
         kspace_torch = to_tensor(kspace)
-        seed = None if not self.use_seed else tuple(map(ord, fname))
-        acq_start = attrs["padding_left"]
-        acq_end = attrs["padding_right"]
 
         crop_size = (attrs["recon_size"][0], attrs["recon_size"][1])
 
         if self.mask_func is not None:
-            masked_kspace, mask_torch, num_low_frequencies = apply_mask(
-                kspace_torch, self.mask_func, seed=seed, padding=(acq_start, acq_end)
-            )
-
-            sample = VarNetSample(
-                masked_kspace=masked_kspace,
-                mask=mask_torch.to(torch.bool),
-                num_low_frequencies=num_low_frequencies,
-                target=target_torch,
-                fname=fname,
-                slice_num=slice_num,
-                max_value=max_value,
-                crop_size=crop_size,
-            )
+            assert NotImplemented
         else:
-            masked_kspace = kspace_torch  # Coil, H, W, 2
+            full_kspace = kspace_torch  # Coil, H, W, 2
 
             # modify mask to include padding
             shape = np.array(kspace_torch.shape)
@@ -592,13 +612,21 @@ class VarNetDataTransformM2:
             shape[:-3] = 1
             mask_shape = [1] * len(shape)
             mask_shape[-2] = num_cols
-            mask_torch = torch.from_numpy(mask.reshape(*mask_shape).astype(np.float32))
+            mask_torch = torch.from_numpy(self.mask.reshape(*mask_shape).astype(np.float32))
             mask_torch = mask_torch.reshape(*mask_shape)
-            # mask_torch[:, :, :acq_start] = 0
-            # mask_torch[:, :, acq_end:] = 0  # mask_torch here (1, 1, H, 1), low freq in center
 
-            sample = VarNetSample(
+            mask = mask_torch.repeat(1, shape[1], 1, 1)  #  rep(1, 1, 320, 1) --> (1, ?, 320, 1)
+            masked_kspace = full_kspace * mask
+
+            gt = fastmri.rss(fastmri.complex_abs(fastmri.ifft2c(full_kspace)), dim=0)
+            zf = fastmri.rss(fastmri.complex_abs(fastmri.ifft2c(masked_kspace)), dim=0)
+            gt = center_crop(gt, crop_size)
+            zf = center_crop(zf, crop_size)
+
+            sample = VarNetSampleM2(
                 masked_kspace=masked_kspace,
+                gt=gt,
+                zf=zf,
                 mask=mask_torch.to(torch.bool),
                 num_low_frequencies=0,
                 target=target_torch,

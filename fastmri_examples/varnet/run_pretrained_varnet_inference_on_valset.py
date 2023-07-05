@@ -87,7 +87,7 @@ def get_sens_map(batch, model, device):
     return sens_map, int(batch.slice_num[0]), batch.fname[0]
 
 
-def run_inference(challenge, state_dict_file, data_path, output_path, device):
+def run_inference(challenge, state_dict_file, data_path, output_path, device, mask):
     model = VarNet(num_cascades=12, pools=4, chans=18, sens_pools=4, sens_chans=8)
     # download the state_dict if we don't have it
     if state_dict_file is None:
@@ -101,8 +101,7 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device):
     model = model.eval()
 
     # data loader setup
-    # data_transform = T.VarNetDataTransform()  # need to modify here
-    data_transform = T.VarNetDataTransformM2()  # need to modify here
+    data_transform = T.VarNetDataTransformM2(mask=mask)  # need to modify here
     dataset = SliceDataset(root=data_path,
                            transform=data_transform,
                            challenge="multicoil",
@@ -113,16 +112,21 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device):
     # run the model
     start_time = time.perf_counter()
     outputs = defaultdict(list)
-    sens_maps = defaultdict(list)  # FIXME: DELETE
+    sens_maps = defaultdict(list)
+    gts = defaultdict(list)
+    zfs = defaultdict(list)
     model = model.to(device)
 
     for batch in tqdm(dataloader, desc="Running inference"):
         with torch.no_grad():
             output, slice_num, fname = run_varnet_model(batch, model, device)
-            sens_map, slice_num, fname = get_sens_map(batch, model, device)  # FIXME: DELETE
-
+            # sens_map, slice_num, fname = get_sens_map(batch, model, device)  # FIXME: DELETE
+            gt = batch.gt[0]
+            zf = batch.zf[0]
+        gts[fname].append((slice_num, gt))
+        zfs[fname].append((slice_num, zf))
         outputs[fname].append((slice_num, output))
-        sens_maps[fname].append((slice_num, sens_map))  # FIXME: DELETE
+        # sens_maps[fname].append((slice_num, sens_map))  # FIXME: DELETE
 
     # save outputs
     import matplotlib.pyplot as plt
@@ -131,26 +135,32 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device):
         for idx, (idx_name, image_slice) in enumerate(outputs[fname]):
             img_info = '{}_{:03d}'.format(fname[:-3], idx_name)
             image_slice = image_slice.numpy()
-            mkdir(os.path.join(output_path, 'png'))
-            plt.imsave(os.path.join(output_path, 'png', '{}.png'.format(img_info)), np.abs(image_slice), cmap='gray')
+            mkdir(os.path.join(output_path, 'recon'))
+            plt.imsave(os.path.join(output_path, 'recon', '{}.png'.format(img_info)), np.abs(image_slice), cmap='gray')
+
+            _, gt = gts[fname][idx]
+            gt = gt.numpy()
+            mkdir(os.path.join(output_path, 'gt'))
+            plt.imsave(os.path.join(output_path, 'gt', '{}.png'.format(img_info)), np.abs(gt), cmap='gray')
+
+            _, zf = zfs[fname][idx]
+            zf = zf.numpy()
+            mkdir(os.path.join(output_path, 'zf'))
+            plt.imsave(os.path.join(output_path, 'zf', '{}.png'.format(img_info)), np.abs(zf), cmap='gray')
 
             # FIXME: DELETE
-            _, sens_map = sens_maps[fname][idx]
-            sens_map = sens_map.numpy()
-            mkdir(os.path.join(output_path, 'sens_map'))
-            for idx_c in range(15):
-                plt.imsave(os.path.join(output_path, 'sens_map', '{}_{}.png'.format(img_info, idx_c)), np.abs(sens_map[idx_c]), cmap='gray')
+            # _, sens_map = sens_maps[fname][idx]
+            # sens_map = sens_map.numpy()
+            # mkdir(os.path.join(output_path, 'sens_map'))
+            # for idx_c in range(15):
+            #     plt.imsave(os.path.join(output_path, 'sens_map', '{}_{}.png'.format(img_info, idx_c)), np.abs(sens_map[idx_c]), cmap='gray')
 
-
-            # mkdir(os.path.join(output_path, 'h5'))
-            # with h5py.File(os.path.join(output_path, 'h5', '{}.h5'.format(img_info)), "w") as file:
-            #     file['recon'] = image_slice
-            #     file.attrs['img_info'] = img_info
-
-    # for fname in outputs:
-    #     outputs[fname] = np.stack([out for _, out in sorted(outputs[fname])])
-    #
-    # fastmri.save_reconstructions(outputs, output_path / "reconstructions")
+            mkdir(os.path.join(output_path, 'h5'))
+            with h5py.File(os.path.join(output_path, 'h5', '{}.h5'.format(img_info)), "w") as file:
+                file['recon'] = image_slice
+                file['gt'] = gt
+                file['zf'] = zf
+                file.attrs['img_info'] = img_info
 
     end_time = time.perf_counter()
 
@@ -160,17 +170,34 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device):
 if __name__ == "__main__":
 
     import pathlib
-    # data_path = pathlib.Path('/media/NAS03/fastMRI/knee/rawdata/multicoil_challenge')
-    # data_path = pathlib.Path('/media/NAS03/fastMRI/knee/d.2.1.complex.mc.ori640/val_mini/h5raw')
-    data_path = pathlib.Path('/media/NAS03/fastMRI/knee/d.2.1.complex.mc.ori640/val_nano/h5raw')
-    # data_path = pathlib.Path('/media/NAS03/fastMRI/knee/d.2.1.complex.mc.cp320/val_mini/h5raw')
-    # data_path = pathlib.Path('/media/NAS03/fastMRI/knee/d.2.1.complex.mc.cp320.norm/val_mini/h5raw')
-    output_path = pathlib.Path('/home/jh/fastMRI/jh/results')
+
+    # mask_name = 'fMRI_Ran_AF4_CF0.08_PE320'
+    # mask_name = 'fMRI_Ran_AF8_CF0.04_PE320'
+    mask_name = 'fMRI_Ran_AF16_CF0.02_PE320'
+
+    from select_mask import define_Mask
+    # from fastmri_examples.varnet.select_mask import define_mask
+
+    opt = {}
+    opt['mask'] = mask_name
+    # get mask
+    if 'fMRI' in opt['mask']:
+        mask = define_Mask(opt)
+        mask = mask[:, np.newaxis]
+    else:
+        raise NotImplementedError
+
+    data_path = pathlib.Path(f'/media/NAS03/fastMRI/knee/d.2.0.complex.mc.ori640.VarNet/val_mini/PD/h5raw')
+    task_name = f'varnet_knee_mc.d.2.0.complex.mc.ori640.VarNet.{mask_name}'
+
+    output_path = pathlib.Path('/home/jh/fastMRI/jh/results/{}'.format(task_name))
+    mkdir(output_path)
 
     run_inference(challenge='varnet_knee_mc',
                   state_dict_file=None,
                   data_path=data_path,
                   output_path=output_path,
                   device='cuda',
+                  mask=mask,  # (320, 1)
                   )
 
