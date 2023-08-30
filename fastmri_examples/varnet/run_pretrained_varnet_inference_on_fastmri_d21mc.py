@@ -22,6 +22,8 @@ import fastmri.data.transforms as T
 from fastmri.data import SliceDataset
 from fastmri.models import VarNet
 
+import matplotlib.pyplot as plt
+
 VARNET_FOLDER = "https://dl.fbaipublicfiles.com/fastMRI/trained_models/varnet/"
 MODEL_FNAMES = {
     "varnet_knee_mc": "knee_leaderboard_state_dict.pt",
@@ -107,7 +109,7 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device, ma
                            challenge="multicoil",
                            )
 
-    dataloader = torch.utils.data.DataLoader(dataset, num_workers=4)
+    dataloader = torch.utils.data.DataLoader(dataset, num_workers=1)
 
     # run the model
     start_time = time.perf_counter()
@@ -123,44 +125,29 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device, ma
             # sens_map, slice_num, fname = get_sens_map(batch, model, device)  # FIXME: DELETE
             gt = batch.gt[0]
             zf = batch.zf[0]
-        gts[fname].append((slice_num, gt))
-        zfs[fname].append((slice_num, zf))
-        outputs[fname].append((slice_num, output))
-        # sens_maps[fname].append((slice_num, sens_map))  # FIXME: DELETE
 
-    # save outputs
-    import matplotlib.pyplot as plt
-    for fname in outputs:
-        assert len(outputs[fname]) == 20
-        for idx, (idx_name, image_slice) in enumerate(outputs[fname]):
-            img_info = '{}_{:03d}'.format(fname[:-3], idx_name)
-            image_slice = image_slice.numpy()
+            img_info = '{}_{:03d}'.format(fname[:-3], slice_num)
+
+            # save outputs
+            output = output.numpy()
             mkdir(os.path.join(output_path, 'recon'))
-            plt.imsave(os.path.join(output_path, 'recon', '{}.png'.format(img_info)), np.abs(image_slice), cmap='gray')
+            plt.imsave(os.path.join(output_path, 'recon', '{}.png'.format(img_info)), np.abs(output), cmap='gray')
 
-            _, gt = gts[fname][idx]
             gt = gt.numpy()
             mkdir(os.path.join(output_path, 'gt'))
             plt.imsave(os.path.join(output_path, 'gt', '{}.png'.format(img_info)), np.abs(gt), cmap='gray')
 
-            _, zf = zfs[fname][idx]
             zf = zf.numpy()
             mkdir(os.path.join(output_path, 'zf'))
             plt.imsave(os.path.join(output_path, 'zf', '{}.png'.format(img_info)), np.abs(zf), cmap='gray')
 
-            # FIXME: DELETE
-            # _, sens_map = sens_maps[fname][idx]
-            # sens_map = sens_map.numpy()
-            # mkdir(os.path.join(output_path, 'sens_map'))
-            # for idx_c in range(15):
-            #     plt.imsave(os.path.join(output_path, 'sens_map', '{}_{}.png'.format(img_info, idx_c)), np.abs(sens_map[idx_c]), cmap='gray')
-
             mkdir(os.path.join(output_path, 'h5'))
             with h5py.File(os.path.join(output_path, 'h5', '{}.h5'.format(img_info)), "w") as file:
-                file['recon'] = image_slice
+                file['recon'] = output
                 file['gt'] = gt
                 file['zf'] = zf
                 file.attrs['img_info'] = img_info
+
 
     end_time = time.perf_counter()
 
@@ -170,13 +157,12 @@ def run_inference(challenge, state_dict_file, data_path, output_path, device, ma
 if __name__ == "__main__":
 
     import pathlib
+    from select_mask import define_Mask
+    # from fastmri_examples.varnet.select_mask import define_mask
 
     # mask_name = 'fMRI_Ran_AF4_CF0.08_PE320'
     # mask_name = 'fMRI_Ran_AF8_CF0.04_PE320'
     mask_name = 'fMRI_Ran_AF16_CF0.02_PE320'
-
-    from select_mask import define_Mask
-    # from fastmri_examples.varnet.select_mask import define_mask
 
     opt = {}
     opt['mask'] = mask_name
@@ -187,8 +173,8 @@ if __name__ == "__main__":
     else:
         raise NotImplementedError
 
-    data_path = pathlib.Path(f'/media/NAS03/fastMRI/knee/d.2.0.complex.mc.ori640.VarNet/val_mini/PD/h5raw')
-    task_name = f'varnet_knee_mc.d.2.0.complex.mc.ori640.VarNet.{mask_name}'
+    data_path = pathlib.Path(f'/media/NAS03/fastMRI/knee/d.2.1.complex.mc.ori640.VarNet/val_mini/PD/h5raw')
+    task_name = f'VarNet_FastMRIKneePD_d.2.1.complex.mc.ori640.VarNet.{mask_name}'
 
     output_path = pathlib.Path('/home/jh/fastMRI/jh/results/{}'.format(task_name))
     mkdir(output_path)
